@@ -1,0 +1,18 @@
+{
+  "inputs": [],
+  "servers": {
+    "wolfram": {
+      "command": ".venv/bin/python",
+      "args": [
+        "-m", "wolfram_mcp.server",
+        "--kernel-path",
+        "/Applications/Wolfram.app/Contents/MacOS/WolframKernel",
+        "--transport",
+        "stdio"
+      ],
+      "env": {
+        "PYTHONUNBUFFERED": "1"
+      }
+    }
+  }
+}

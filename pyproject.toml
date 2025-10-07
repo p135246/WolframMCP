@@ -1,0 +1,31 @@
+[project]
+name = "wolfram-mcp"
+version = "0.1.0"
+description = "Model Context Protocol (MCP) server that integrates Wolfram Engine to create and edit notebooks"
+authors = [ { name = "Your Name", email = "you@example.com" } ]
+requires-python = ">=3.10"
+readme = "README.md"
+license = { text = "MIT" }
+dependencies = [
+  "mcp>=0.1.0",
+  "pydantic>=2.7.0",
+  "typing-extensions>=4.9.0",
+  "wolframclient>=1.1.9"
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "ruff", "black"]
+
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project.scripts]
+wolfram-mcp = "wolfram_mcp.server:run"
+
+[tool.ruff]
+line-length = 100
+
+[tool.black]
+line-length = 100
+

@@ -1,0 +1,9 @@
+{
+    "chat.mcp.serverSampling": {
+        "WolframMCP/.vscode/mcp.json: wolfram": {
+            "allowedModels": [
+                "copilot/gpt-5"
+            ]
+        }
+    }
+}
