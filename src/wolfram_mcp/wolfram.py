@@ -1,5 +1,7 @@
 import json
 import os
+import shutil
+import logging
 from pathlib import Path
 from typing import List, Optional, Any, Sequence, Tuple
 
@@ -7,15 +9,93 @@ from wolframclient.evaluation import WolframLanguageSession
 from wolframclient.language import wl, wlexpr
 
 
+logger = logging.getLogger("wolfram_mcp.wolfram")
+
+
 class WolframEngine:
     def __init__(self, kernel_path: Optional[str] = None):
-        # Defer starting a kernel until first evaluation (speeds server startup and allows running without kernel until needed)
-        self._kernel_path = kernel_path
+        """Initialize the engine and attempt to resolve a kernel path.
+
+        Resolution precedence:
+          1. Explicit `kernel_path` argument
+          2. Environment variable `WOLFRAM_KERNEL_PATH`
+          3. Auto-discovery heuristics (static candidate list + `shutil.which` lookups)
+
+        The resolved path (or None) is logged at INFO level so tests / users always
+        see what was chosen without relying on raw prints.
+        """
+        # 1 / 2: explicit or env
+        resolved = kernel_path or os.environ.get("WOLFRAM_KERNEL_PATH")
+        # 3: auto-discovery
+        if resolved is None:
+            resolved = self._auto_discover_kernel()
+        self._kernel_path = resolved
+        logger.info("Resolved Wolfram Kernel path: %s", resolved)
         self.session: Optional[WolframLanguageSession] = None
+
+    @staticmethod
+    def _candidate_paths() -> List[str]:  # pragma: no cover - simple list builder
+        """Return common kernel locations & discovered executables (best-effort)."""
+        paths: List[str] = []
+        if os.name == "posix":  # macOS & Linux
+            # macOS app bundles
+            paths += [
+                "/Applications/Wolfram.app/Contents/MacOS/WolframKernel",
+                "/Applications/Wolfram Engine.app/Contents/MacOS/WolframKernel",
+            ]
+            # Common /usr/local style installs
+            paths += [
+                "/usr/local/Wolfram/Mathematica/Kernel/WolframKernel",
+                "/usr/local/Wolfram/Engine/Kernel/WolframKernel",
+                "/usr/bin/WolframKernel",
+                "/opt/Wolfram/WolframKernel",
+            ]
+        else:  # Windows typical locations
+            program_files = os.environ.get("ProgramFiles", r"C:\\Program Files")
+            program_files_x86 = os.environ.get("ProgramFiles(x86)", r"C:\\Program Files (x86)")
+            paths += [
+                f"{program_files}\\Wolfram Research\\Mathematica\\13.3\\WolframKernel.exe",
+                f"{program_files_x86}\\Wolfram Research\\Mathematica\\13.3\\WolframKernel.exe",
+            ]
+        # Add shutil.which discoveries (wolframscript resolves to kernel internally, but accept direct kernel too)
+        for exe in ["WolframKernel", "wolframscript"]:
+            found = shutil.which(exe)
+            if found:
+                paths.append(found)
+        # Deduplicate preserving order
+        seen = set()
+        uniq: List[str] = []
+        for p in paths:
+            if p not in seen:
+                uniq.append(p)
+                seen.add(p)
+        return uniq
+
+    def _auto_discover_kernel(self) -> Optional[str]:  # pragma: no cover - heuristic
+        for p in self._candidate_paths():
+            if os.path.exists(p) and os.access(p, os.X_OK):
+                logger.debug("Auto-discovered kernel candidate: %s", p)
+                return p
+        logger.debug("No auto-discovered Wolfram Kernel candidates were executable")
+        return None
 
     def _ensure_session(self):
         if self.session is None:
-            self.session = WolframLanguageSession(self._kernel_path) if self._kernel_path else WolframLanguageSession()
+            try:
+                if not self._kernel_path:
+                    raise RuntimeError(
+                        "No Wolfram Kernel path found. Set WOLFRAM_KERNEL_PATH or install the Wolfram Engine (see README)."
+                    )
+                if not (os.path.exists(self._kernel_path) and os.access(self._kernel_path, os.X_OK)):
+                    raise RuntimeError(
+                        f"Configured Wolfram Kernel path is not executable: {self._kernel_path}"
+                    )
+                self.session = WolframLanguageSession(self._kernel_path)
+                logger.info("Started Wolfram Kernel session: %s", self._kernel_path)
+            except Exception as e:  # noqa: BLE001
+                raise RuntimeError(
+                    "Unable to start Wolfram Kernel. Provide a valid path via WOLFRAM_KERNEL_PATH or --kernel-path. Original error: " + str(e)
+                ) from e
 
     def _eval_expr(self, expr: Any) -> Any:
         try:
@@ -27,6 +107,74 @@ class WolframEngine:
     def evaluate(self, code: str) -> str:
         res = self._eval_expr(wlexpr(code))
         return str(res)
+
+    def evaluate_raster(self, code: str, fmt: str = "PNG", background: str | None = None, width: Optional[int] = None, height: Optional[int] = None, dpi: int | None = None) -> str:
+        """Evaluate a Wolfram Language expression and rasterize the result to an image.
+
+        Returns a JSON string with keys: format, width, height, data (base64), exprType, success, error(optional).
+
+        Parameters:
+          code: Wolfram Language source text (string form) to evaluate.
+          fmt: Image export format (e.g. "PNG", "JPEG").
+          background: Optional background color (e.g. "White").
+          width/height: Optional explicit pixel dimensions (passed to Rasterize via ImageSize -> {w,h}).
+          dpi: Optional raster resolution (ImageResolution option).
+        """
+        # Build WL code that safely attempts evaluation then rasterization, capturing errors.
+        # Use ToExpression with HoldComplete to avoid premature evaluation of unintended input; here we deliberately evaluate.
+        opts_parts: list[str] = []
+        if background:
+            # Background must be a WL color spec; we quote raw string input
+            bg_lit = background if background.startswith("{") else background
+            opts_parts.append(f"Background -> {bg_lit}")
+        if dpi is not None:
+            opts_parts.append(f"ImageResolution -> {int(dpi)}")
+        size_part = ""
+        if width is not None or height is not None:
+            # If only one provided, let Mathematica infer the other proportionally by using Automatic.
+            w = "Automatic" if width is None else str(int(width))
+            h = "Automatic" if height is None else str(int(height))
+            size_part = f"ImageSize -> {{{w},{h}}}"
+            opts_parts.append(size_part)
+        opts = ",".join(opts_parts)
+        if opts:
+            opts = "," + opts
+        # We embed code literal as string then ToExpression; escape properly via json.dumps.
+        code_lit = json.dumps(code)
+        fmt_lit = json.dumps(fmt)
+        # Rasterize to an Image; format is only applied at export step. Use BaseEncode for base64.
+        # Use ToExpression with HoldComplete wrapper to catch syntax issues cleanly.
+        # We pass the string, no custom context, and then release the HoldComplete to evaluate.
+        wl_code = "".join([
+            "Module[{expr,img,ok=True,err=Null,msgs={},dims,data,bytes,held},",
+            "Block[{$MessageList},",
+            f"held = Quiet@Check[ToExpression[{code_lit}, StandardForm, HoldComplete], (ok=False; err=\"EvaluationFailed\"; $Failed)];",
+            "msgs = $MessageList;",
+            "];",
+            "If[held === $Failed, expr = $Failed, expr = ReleaseHold[held]];",
+            "If[ok && expr === $Failed, ok=False; err=\"EvaluationFailed\"];",
+            "If[ok && expr =!= $Failed,",
+            f"img = Quiet@Check[Rasterize[expr{opts}], (ok=False; err=\"RasterizeFailed\"; $Failed)],",
+            "img = $Failed];",
+            "If[img === $Failed && ok, ok=False; If[err===Null, err=\"RasterizeFailed\"]];",
+            "If[img =!= $Failed, dims = ImageDimensions[img], dims = {Null, Null}];",
+            f"bytes = If[img === $Failed, Null, ExportByteArray[img, {fmt_lit}]];",
+            "data = If[bytes === Null, Null, BaseEncode[bytes]];",
+            "ExportString[<|",
+            f"\"format\" -> {fmt_lit},",
+            "\"success\" -> ok && img =!= $Failed,",
+            "\"exprType\" -> If[expr === $Failed, \"$Failed\", ToString[Head[expr]]],",
+            "\"error\" -> If[ok && img =!= $Failed, Null, err],",
+            "\"messages\" -> ToString[msgs],",
+            "\"width\" -> dims[[1]],",
+            "\"height\" -> dims[[2]],",
+            "\"data\" -> data",
+            "|>, \"JSON\"]",
+            "]"
+        ])
+        # Debug log (could later be behind verbosity flag)
+        # print("WL_CODE:", wl_code)
+        return self.evaluate(wl_code)
 
     # Notebook operations
     def create_notebook(self, path: str, cells: Optional[List[str]] = None) -> str:

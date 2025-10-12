@@ -15,6 +15,8 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest", "ruff", "black"]
+examples = ["pillow", "anyio"]
+all = ["pytest", "ruff", "black", "pillow", "anyio"]
 
 [build-system]
 requires = ["setuptools", "wheel"]

@@ -5,13 +5,11 @@
       "command": ".venv/bin/python",
       "args": [
         "-m", "wolfram_mcp.server",
-        "--kernel-path",
-        "/Applications/Wolfram.app/Contents/MacOS/WolframKernel",
-        "--transport",
-        "stdio"
+        "--transport", "stdio"
       ],
       "env": {
-        "PYTHONUNBUFFERED": "1"
+        "PYTHONUNBUFFERED": "1",
+        "WOLFRAM_KERNEL_PATH": "/Applications/Wolfram.app/Contents/MacOS/WolframKernel"
       }
     }
   }
