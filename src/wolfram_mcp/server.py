@@ -421,7 +421,10 @@ def hover_info(path: str, line: int, character: int) -> str:
     Parameters:
       path: Path to the file (absolute or relative to project root).
       line: 0-based line number.
-      character: 0-based column number.
+      character: 0-based column number within the line. Must point to a character
+        inside a symbol name (e.g., for "  result = Foo[ x ]", character=12 hits
+        "F" in "Foo"). Use read_source_file first to see the line content and count
+        the offset. Whitespace, brackets, or operators return no information.
     """
     client = _get_lsp_client()
     result = client.hover(_resolve_path(path), line, character)
@@ -448,8 +451,14 @@ def find_definition(path: str, line: int, character: int) -> str:
     Parameters:
       path: Path to the file containing the symbol reference.
       line: 0-based line number.
-      character: 0-based column number.
+      character: 0-based column number within the line. Must point to a character
+        inside the symbol name you want to look up (e.g., for "  result = Foo[ x ]",
+        character=12 hits "F" in "Foo"). Use read_source_file first to see the line
+        content and count the offset. Whitespace, brackets, or operators return
+        no results.
     Returns: JSON list of definition locations with file paths and ranges.
+      Returns empty for built-in Wolfram symbols (Module, Map, Print, etc.) since
+      they have no user-accessible source. Only user-defined symbols resolve.
     """
     client = _get_lsp_client()
     locations = client.definition(_resolve_path(path), line, character)
@@ -468,7 +477,10 @@ def find_references(path: str, line: int, character: int) -> str:
     Parameters:
       path: Path to the file containing the symbol.
       line: 0-based line number.
-      character: 0-based column number.
+      character: 0-based column number within the line. Must point to a character
+        inside the symbol name (e.g., for "  result = Foo[ x ]", character=12 hits
+        "F" in "Foo"). Use read_source_file first to see the line content and count
+        the offset. Whitespace, brackets, or operators return no results.
     Returns: JSON list of reference locations.
     """
     client = _get_lsp_client()
