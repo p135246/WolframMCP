@@ -1,6 +1,6 @@
 [project]
 name = "wolfram-mcp"
-version = "0.1.0"
+version = "0.2.0"
 description = "Model Context Protocol (MCP) server that integrates Wolfram Engine to create and edit notebooks"
 authors = [ { name = "Your Name", email = "you@example.com" } ]
 requires-python = ">=3.10"
