@@ -65,7 +65,7 @@ def render_image(
     width: int | None = None,
     height: int | None = None,
     dpi: int | None = None,
-    register: bool = True,
+    auto_register: bool = True,
     include_hash_preview: bool = False,
 ):  # type: ignore[override]
     """Render a Wolfram Language expression as an image and emit MCP multimodal content.
@@ -82,7 +82,7 @@ def render_image(
       code: WL source expression (Graphics/Image/Plot/etc.).
       fmt: Export format (PNG/JPEG/etc.).
       width/height/dpi: Optional size & resolution hints passed through to rasterization.
-      register: If True, store metadata and add resource field.
+      auto_register: If True, store metadata and add resource field.
       include_hash_preview: If True and registered, include digestPrefix in image block.
 
     Returns: list[dict]
@@ -148,7 +148,7 @@ def render_image(
         image_block["uri"] = uri
 
     # Optional registration/upgrade
-    if register:
+    if auto_register:
         resource_uri = f"wolfram://image/byhash/{digest32}"
         existing = _IMAGE_REGISTRY.get(digest32)
         has_data_now = False  # base64 disabled
@@ -174,7 +174,7 @@ def render_image(
     text_block = {"type": "text", "text": summary}
 
     blocks = [text_block, image_block]
-    if register and resource_uri:
+    if auto_register and resource_uri:
         # Add an explicit guidance block to nudge client usage of resource URI.
         guidance = {
             "type": "text",

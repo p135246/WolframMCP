@@ -87,7 +87,7 @@ You can configure `WOLFRAM_KERNEL_PATH` once in your VS Code MCP client config (
 
 | Tool | Description | Args |
 |------|-------------|------|
-| `render_image` | Render expression as image, persist to disk, return URI | `code`, `fmt?`, `width?`, `height?`, `dpi?`, `register?`, `include_hash_preview?` |
+| `render_image` | Render expression as image, persist to disk, return URI | `code`, `fmt?`, `width?`, `height?`, `dpi?`, `auto_register?`, `include_hash_preview?` |
 | `attach_saved_image` | Attach an existing local image file as a URI-only image block | `path` |
 | `list_image_resources` | List registered image resource URIs | (none) |
 
@@ -137,7 +137,7 @@ The response is a list `[text_block, image_block]` where the image block contain
 
 ### Registration
 
-With `register=True` (the default), image metadata is stored in an in-memory registry keyed by a 32-hex digest. A resource URI (`wolfram://image/byhash/<digest>`) is added to the image block, allowing clients to reference images by stable identifiers. Set `include_hash_preview=True` to also include a `digestPrefix` (first 8 hex chars) for quick human reference.
+With `auto_register=True` (the default), image metadata is stored in an in-memory registry keyed by a 32-hex digest. A resource URI (`wolfram://image/byhash/<digest>`) is added to the image block, allowing clients to reference images by stable identifiers. Set `include_hash_preview=True` to also include a `digestPrefix` (first 8 hex chars) for quick human reference.
 
 ### Environment Variables
 
