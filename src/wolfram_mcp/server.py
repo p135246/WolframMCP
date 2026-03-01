@@ -1,21 +1,56 @@
 from __future__ import annotations
 import argparse
+import json as _json
 import os
 import logging
+from pathlib import Path
 from typing import List, Optional, Any
+from urllib.parse import unquote, urlparse
 
 from mcp.server.fastmcp import FastMCP
 from .wolfram import WolframEngine
+from .lsp_client import WolframLSPClient
 
 app = FastMCP("wolfram-mcp")
 logger = logging.getLogger("wolfram_mcp.server")
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 engine: WolframEngine | None = None
+_lsp_client: WolframLSPClient | None = None
+_project_root: str | None = None
 
 # Resource helpers
 _LATEST_NOTEBOOK_PATH: str | None = None
 # In‑memory registry for generic rendered images (hash -> metadata)
 _IMAGE_REGISTRY: dict[str, dict[str, Any]] = {}
+
+
+def _get_lsp_client() -> WolframLSPClient:
+    global _lsp_client
+    if _lsp_client is None:
+        assert engine is not None, "Engine not initialized"
+        assert engine._kernel_path is not None, (
+            "No Wolfram Kernel found. Set WOLFRAM_KERNEL_PATH or --kernel-path."
+        )
+        root = _project_root or os.getcwd()
+        _lsp_client = WolframLSPClient(kernel_path=engine._kernel_path, project_root=root)
+    return _lsp_client
+
+
+def _resolve_path(path: str) -> str:
+    if os.path.isabs(path):
+        return path
+    root = _project_root or os.getcwd()
+    return os.path.join(root, path)
+
+
+def _uri_to_relative(uri: str) -> str:
+    parsed = urlparse(uri)
+    abs_path = unquote(parsed.path)
+    root = _project_root or os.getcwd()
+    try:
+        return os.path.relpath(abs_path, root)
+    except ValueError:
+        return abs_path
 
 @app.tool()
 def evaluate(code: str) -> str:
@@ -353,14 +388,169 @@ def resource_image_byhash(digest: str):  # type: ignore[override]
 
 
 
+# --- LSP Code Intelligence Tools ---
+
+@app.tool()
+def document_symbols(path: str, depth: int = 0) -> str:
+    """Get symbols defined in a Wolfram Language file (.wl/.wls).
+
+    Returns JSON list of symbols with names, kinds, and ranges.
+    Use this to understand the structure of a Wolfram source file.
+
+    Parameters:
+      path: Path to the .wl or .wls file (absolute or relative to project root).
+      depth: How deep to show nested symbols (0 = top-level only).
+    """
+    client = _get_lsp_client()
+    symbols = client.document_symbols(_resolve_path(path))
+
+    def truncate(sym: dict, d: int) -> dict:
+        result = {k: v for k, v in sym.items() if k != "children"}
+        if d > 0 and "children" in sym:
+            result["children"] = [truncate(c, d - 1) for c in sym["children"]]
+        return result
+
+    symbols = [truncate(s, depth) for s in symbols]
+    return _json.dumps(symbols, indent=2)
+
+
+@app.tool()
+def hover_info(path: str, line: int, character: int) -> str:
+    """Get documentation/type info for a symbol at a position in a Wolfram file.
+
+    Parameters:
+      path: Path to the file (absolute or relative to project root).
+      line: 0-based line number.
+      character: 0-based column number.
+    """
+    client = _get_lsp_client()
+    result = client.hover(_resolve_path(path), line, character)
+    if result is None:
+        return "No hover information available at this position."
+    contents = result.get("contents", "")
+    if isinstance(contents, dict):
+        return contents.get("value", str(contents))
+    if isinstance(contents, list):
+        parts = []
+        for item in contents:
+            if isinstance(item, dict):
+                parts.append(item.get("value", str(item)))
+            else:
+                parts.append(str(item))
+        return "\n".join(parts)
+    return str(contents)
+
+
+@app.tool()
+def find_definition(path: str, line: int, character: int) -> str:
+    """Go to definition of the symbol at a position.
+
+    Parameters:
+      path: Path to the file containing the symbol reference.
+      line: 0-based line number.
+      character: 0-based column number.
+    Returns: JSON list of definition locations with file paths and ranges.
+    """
+    client = _get_lsp_client()
+    locations = client.definition(_resolve_path(path), line, character)
+    for loc in locations:
+        if "uri" in loc:
+            loc["path"] = _uri_to_relative(loc["uri"])
+        if "targetUri" in loc:
+            loc["targetPath"] = _uri_to_relative(loc["targetUri"])
+    return _json.dumps(locations, indent=2) if locations else "No definition found."
+
+
+@app.tool()
+def find_references(path: str, line: int, character: int) -> str:
+    """Find all references to the symbol at a position across the project.
+
+    Parameters:
+      path: Path to the file containing the symbol.
+      line: 0-based line number.
+      character: 0-based column number.
+    Returns: JSON list of reference locations.
+    """
+    client = _get_lsp_client()
+    refs = client.references(_resolve_path(path), line, character)
+    for ref in refs:
+        if "uri" in ref:
+            ref["path"] = _uri_to_relative(ref["uri"])
+    return _json.dumps(refs, indent=2) if refs else "No references found."
+
+
+@app.tool()
+def get_diagnostics(path: str = "") -> str:
+    """Get diagnostic messages (errors, warnings) from the Wolfram LSP.
+
+    Parameters:
+      path: Path to a specific file (absolute or relative), or empty for all diagnostics.
+    Returns: JSON object mapping file paths to their diagnostics.
+    """
+    client = _get_lsp_client()
+    if path:
+        uri = Path(_resolve_path(path)).as_uri()
+        diags = client.get_diagnostics(uri)
+    else:
+        diags = client.get_diagnostics()
+    result = {}
+    for uri, items in diags.items():
+        result[_uri_to_relative(uri)] = items
+    return _json.dumps(result, indent=2) if result else "No diagnostics available."
+
+
+@app.tool()
+def list_project_files(directory: str = "") -> str:
+    """List Wolfram Language source files (.wl, .wls, .m, .nb) in the project.
+
+    Parameters:
+      directory: Subdirectory to list (relative to project root). Empty = entire project.
+    Returns: JSON list of file paths relative to project root.
+    """
+    root = _project_root or os.getcwd()
+    search_root = os.path.join(root, directory) if directory else root
+    extensions = {".wl", ".wls", ".m", ".nb"}
+    files = []
+    for dirpath, dirnames, filenames in os.walk(search_root):
+        dirnames[:] = [d for d in dirnames if not d.startswith(".")]
+        for f in sorted(filenames):
+            if os.path.splitext(f)[1] in extensions:
+                abs_path = os.path.join(dirpath, f)
+                files.append(os.path.relpath(abs_path, root))
+    return _json.dumps(files, indent=2)
+
+
+@app.tool()
+def read_source_file(path: str, start_line: int = 0, end_line: int = -1) -> str:
+    """Read a source file from the project.
+
+    Parameters:
+      path: Path to the file (absolute or relative to project root).
+      start_line: First line to read (0-based). Default: 0.
+      end_line: Last line to read (exclusive, 0-based). -1 = entire file.
+    Returns: File contents (or the requested line range).
+    """
+    abs_path = _resolve_path(path)
+    text = Path(abs_path).read_text(encoding="utf-8")
+    if start_line == 0 and end_line == -1:
+        return text
+    lines = text.splitlines(keepends=True)
+    if end_line == -1:
+        end_line = len(lines)
+    return "".join(lines[start_line:end_line])
+
+
 def run(argv: List[str] | None = None) -> None:
-    global engine
+    global engine, _project_root
     parser = argparse.ArgumentParser(description="Wolfram MCP Server")
     parser.add_argument("--kernel-path", help="Path to Wolfram Kernel executable", default=None)
+    parser.add_argument("--project-root", help="Root directory for Wolfram Language project (for code intelligence)", default=None)
     parser.add_argument("--transport", choices=["stdio", "sse", "streamable-http"], default="stdio", help="MCP transport mode")
     parser.add_argument("--quiet", action="store_true", help="Reduce logging output (same as --log-level WARNING)")
     parser.add_argument("--log-level", default=None, choices=["DEBUG","INFO","WARNING","ERROR","CRITICAL"], help="Explicit log level override")
     args = parser.parse_args(argv)
+
+    _project_root = args.project_root
 
     # Determine log level
     if args.log_level:
@@ -380,6 +570,8 @@ def run(argv: List[str] | None = None) -> None:
     except KeyboardInterrupt:  # Graceful shutdown, no traceback spam
         logger.info("Received KeyboardInterrupt, shutting down.")
     finally:
+        if _lsp_client is not None:
+            _lsp_client.stop()
         if engine is not None:
             engine.close()
         logger.info("Server stopped.")
